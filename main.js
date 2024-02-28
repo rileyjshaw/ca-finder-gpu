@@ -32,7 +32,6 @@ const canvas = document.getElementById('canvas');
 const gl = canvas.getContext('webgl2', { antialias: false });
 gl.imageSmoothingEnabled = false;
 
-const MAX_NEIGHBOR_RANGE = 10;
 // TODO: Make these configurable. It’s hardcoded a few places for now.
 const WEIGHTS = [1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0];
 const RULES = [
@@ -73,15 +72,17 @@ void main() {
 const displayFsSource = `
 #version 300 es
 precision mediump float;
+precision mediump usampler2D;
 
-uniform sampler2D u_screenTexture;
+uniform usampler2D u_screenTexture;
 
 in vec2 v_texCoord;
 out vec4 FragColor;
 
 void main() {
-    float cellState = texture(u_screenTexture, v_texCoord).r;
-    if (cellState > 0.0) {
+    uint cellState = texture(u_screenTexture, v_texCoord).r;
+
+    if (cellState > 0u) {
         FragColor = vec4(1.0, 0.8, 0.5, 1.0); // Example: Alive cells as yellow
     } else {
         FragColor = vec4(0.0, 0.0, .2, 1.0); // Example: Dead cells as blue
@@ -94,17 +95,18 @@ function getUpdateFsSource() {
 	return `
 	#version 300 es
 	precision mediump float;
+	precision mediump usampler2D;
 
-	uniform sampler2D u_currentStateTexture;
+	uniform usampler2D u_currentStateTexture;
 	uniform vec2 u_resolution;
 	uniform int u_weights[4];
 	uniform int u_neighborRange;
 
 	in vec2 v_texCoord;
-	out vec4 FragColor;
+	out uint State;
 
 	// Function to compute the state of a cell
-	float getWeight(vec2 coord) {
+	uint getWeight(vec2 coord) {
 		coord = fract(coord); // Wrap the texture coordinates around [0, 1].
 		// int weightIdx = int(texture(u_currentStateTexture, coord).r * 255.0);
 		// return weights[weightIdx];
@@ -113,10 +115,10 @@ function getUpdateFsSource() {
 
 	void main() {
 		vec2 onePixel = vec2(1.0) / u_resolution;
-		float state = getWeight(v_texCoord);
+		uint state = getWeight(v_texCoord);
 
 		// Count alive neighbors
-		float sum = 0.0;
+		uint sum = 0u;
 		for (int dx = -u_neighborRange; dx <= u_neighborRange; dx++) {
 			for (int dy = -u_neighborRange; dy <= u_neighborRange; dy++) {
 				if (dx < -u_neighborRange || dx > u_neighborRange || dy < -u_neighborRange || dy > u_neighborRange) continue;
@@ -127,13 +129,13 @@ function getUpdateFsSource() {
 		// sum -= $ {minWeight}.0; // Normalize to [0, $ {maxWeight - minWeight}].
 
 		// Game of Life rules
-		if (state > 0.5) { // Alive
-			if (sum < 2.0 || sum > 3.0) state = 0.0; // Die due to under/overpopulation
+		if (state == 1u) { // Alive
+			if (sum < 2u || sum > 3u) state = 0u; // Die due to under/overpopulation
 		} else { // Dead
-			if (sum == 3.0) state = 1.0; // Become alive through reproduction
+			if (sum == 3u) state = 1u; // Become alive through reproduction
 		}
 
-		FragColor = vec4(state, 0.0, 0.0, 0.0); // Output state
+		State = state;
 	}
 	`;
 }
@@ -159,22 +161,21 @@ const arrays = {
 const bufferInfo = twgl.createBufferInfoFromArrays(gl, arrays);
 
 function createRandomTexture(gl, width, height) {
-	const size = width * height * 4; // 4 bytes per pixel for RGBA
+	const size = width * height; // 4 bytes per pixel for RGBA
 	const data = new Uint8Array(size);
-	for (let i = 0; i < size; i += 4) {
+	for (let i = 0; i < size; ++i) {
 		// Generate a random state.
-		const state = Math.random() < 0.5 ? 0 : 255;
+		const state = Math.random() < 0.5 ? 0 : 1;
 		// const state = Math.floor(Math.random() * N_STATES);
-		// TODO: G, B, and A channels aren’t used.
 		data[i] = state;
 	}
 
 	return twgl.createTexture(gl, {
 		width,
 		height,
-		// TODO: Figure out how to use gl.LUMINANCE instead.
-		// format: gl.R8,
-		// internalFormat: gl.R8,
+		type: gl.UNSIGNED_BYTE,
+		format: gl.RED_INTEGER,
+		internalFormat: gl.R8UI,
 		minMag: gl.NEAREST,
 		wrap: gl.CLAMP_TO_EDGE,
 		src: data,
