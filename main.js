@@ -29,8 +29,7 @@ import * as twgl from 'twgl-base.js';
 import './style.css';
 
 const canvas = document.getElementById('canvas');
-const glOptions = { antialias: false };
-const gl = canvas.getContext('webgl', glOptions) || canvas.getContext('experimental-webgl', glOptions);
+const gl = canvas.getContext('webgl2', { antialias: false });
 gl.imageSmoothingEnabled = false;
 
 const MAX_NEIGHBOR_RANGE = 10;
@@ -40,7 +39,7 @@ const RULES = [
 	16, 8, 16, 1, 16, 8, 6, 13, 16, 11, 16, 0, 2, 16, 2, 6, 1, 7, 2, 6, 7, 11, 12, 11, 16, 7, 14, 0, 0, 16, 14, 16, 8,
 	16, 9, 1, 5, 16, 6, 7, 13, 9, 16, 16, 15, 9, 4, 8, 10, 15,
 ];
-const N_STATES = WEIGHTS.length;
+const N_STATES = 2;
 
 /* TODO: Unused for now.
 
@@ -60,8 +59,9 @@ maxWeight *= nNeighbors;
 
 // Common vertex shader.
 const vsSource = `
-attribute vec4 position;
-varying vec2 v_texCoord;
+#version 300 es
+in vec4 position;
+out vec2 v_texCoord;
 
 void main() {
   gl_Position = position;
@@ -69,9 +69,30 @@ void main() {
 }
 `;
 
+// Display fragment shader.
+const displayFsSource = `
+#version 300 es
+precision mediump float;
+
+uniform sampler2D u_screenTexture;
+
+in vec2 v_texCoord;
+out vec4 FragColor;
+
+void main() {
+    float cellState = texture(u_screenTexture, v_texCoord).r;
+    if (cellState > 0.0) {
+        FragColor = vec4(1.0, 0.8, 0.5, 1.0); // Example: Alive cells as yellow
+    } else {
+        FragColor = vec4(0.0, 0.0, .2, 1.0); // Example: Dead cells as blue
+    }
+}
+`;
+
 // Update fragment shader.
 function getUpdateFsSource() {
 	return `
+	#version 300 es
 	precision mediump float;
 
 	uniform sampler2D u_currentStateTexture;
@@ -79,14 +100,15 @@ function getUpdateFsSource() {
 	uniform int u_weights[4];
 	uniform int u_neighborRange;
 
-	varying vec2 v_texCoord;
+	in vec2 v_texCoord;
+	out vec4 FragColor;
 
 	// Function to compute the state of a cell
 	float getWeight(vec2 coord) {
 		coord = fract(coord); // Wrap the texture coordinates around [0, 1].
-		// int weightIdx = int(texture2D(u_currentStateTexture, coord).r * 255.0);
+		// int weightIdx = int(texture(u_currentStateTexture, coord).r * 255.0);
 		// return weights[weightIdx];
-		return texture2D(u_currentStateTexture, coord).r;
+		return texture(u_currentStateTexture, coord).r;
 	}
 
 	void main() {
@@ -95,8 +117,8 @@ function getUpdateFsSource() {
 
 		// Count alive neighbors
 		float sum = 0.0;
-		for (int dx = -${MAX_NEIGHBOR_RANGE}; dx <= ${MAX_NEIGHBOR_RANGE}; dx++) {
-			for (int dy = -${MAX_NEIGHBOR_RANGE}; dy <= ${MAX_NEIGHBOR_RANGE}; dy++) {
+		for (int dx = -u_neighborRange; dx <= u_neighborRange; dx++) {
+			for (int dy = -u_neighborRange; dy <= u_neighborRange; dy++) {
 				if (dx < -u_neighborRange || dx > u_neighborRange || dy < -u_neighborRange || dy > u_neighborRange) continue;
 				if (dx == 0 && dy == 0) continue;
 				sum += getWeight(v_texCoord + vec2(dx, dy) * onePixel);
@@ -111,27 +133,10 @@ function getUpdateFsSource() {
 			if (sum == 3.0) state = 1.0; // Become alive through reproduction
 		}
 
-		gl_FragColor = vec4(state, state, state, 1.0); // Output state
+		FragColor = vec4(state, 0.0, 0.0, 0.0); // Output state
 	}
 	`;
 }
-
-// Display fragment shader.
-const displayFsSource = `
-precision mediump float;
-
-uniform sampler2D u_screenTexture;
-varying vec2 v_texCoord;
-
-void main() {
-    float cellState = texture2D(u_screenTexture, v_texCoord).r;
-    if (cellState > 0.5) {
-        gl_FragColor = vec4(1.0, 0.8, 0.5, 1.0); // Example: Alive cells as red
-    } else {
-        gl_FragColor = vec4(0.0, 0.0, .2, 1.0); // Example: Dead cells as blue
-    }
-}
-`;
 
 let updateProgramInfo = twgl.createProgramInfo(gl, [vsSource, getUpdateFsSource()]);
 const displayProgramInfo = twgl.createProgramInfo(gl, [vsSource, displayFsSource]);
@@ -158,19 +163,18 @@ function createRandomTexture(gl, width, height) {
 	const data = new Uint8Array(size);
 	for (let i = 0; i < size; i += 4) {
 		// Generate a random state.
-		// const state = Math.floor(Math.random() * N_STATES);
 		const state = Math.random() < 0.5 ? 0 : 255;
-		// Set R, G, B to the same value and A to 255 (opaque)
-		data[i] = data[i + 1] = data[i + 2] = state;
-		data[i + 3] = 255;
+		// const state = Math.floor(Math.random() * N_STATES);
+		// TODO: G, B, and A channels aren’t used.
+		data[i] = state;
 	}
 
 	return twgl.createTexture(gl, {
 		width,
 		height,
 		// TODO: Figure out how to use gl.LUMINANCE instead.
-		// format: gl.LUMINANCE,
-		// internalFormat: gl.LUMINANCE,
+		// format: gl.R8,
+		// internalFormat: gl.R8,
 		minMag: gl.NEAREST,
 		wrap: gl.CLAMP_TO_EDGE,
 		src: data,
