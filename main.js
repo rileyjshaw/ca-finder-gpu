@@ -25,60 +25,23 @@ and determine that it should remain unchanged. */
 
 import * as twgl from 'twgl-base.js';
 import { tinykeys } from 'tinykeys';
-import paletteColors from 'dictionary-of-colour-combinations';
 
-import { hexToNormalizedRGB } from './util.js';
+import palettes from './palettes.js';
+import { generateFurthestSubsequentDistanceArray, hexToNormalizedRGB, shuffleArray } from './util.js';
 
 import './style.css';
 
-const palettes = Array.from(
-	paletteColors.reduce((map, color, i) => {
-		color.combinations.forEach(id => {
-			if (map.has(id)) map.get(id).push(i);
-			else map.set(id, [i]);
-		});
-		return map;
-	}, new Map()),
-	([_name, colorIdxs]) => colorIdxs.map(i => paletteColors[i].hex)
-);
+// Configurable.
+const MAX_WEIGHT = 1.5;
+const MAX_N_STATES = 128;
+const MAX_NEIGHBOR_RANGE = 11;
 
-tinykeys(window, {
-	KeyN: () => {
-		setNeighborRange(Math.max(neighborRange - 1, 1));
-	},
-	KeyM: () => {
-		setNeighborRange(neighborRange + 1);
-	},
-	Space: () => {
-		isPaused = !isPaused;
-		if (isPaused) cancelAnimationFrame(render);
-		else requestAnimationFrame(render);
-	},
-});
+// This array gives the option to run multiple update programs per frame. Args
+// are [gridSize, canvasOffset].
+const stackedUpdates = [[1], [1, 0.25]];
 
-const canvas = document.getElementById('canvas');
-const gl = canvas.getContext('webgl2', { antialias: false });
-gl.imageSmoothingEnabled = false;
-
-// TODO: Make these mutable.
-const CELL_INERTIA = 0.9;
-const MAX_WEIGHT = 4;
-const getRandomWeight = () => Math.floor(Math.random() * MAX_WEIGHT + 1);
-const STATES = palettes[Math.floor(Math.random() * palettes.length)].map(color => ({
-	color,
-	weight: getRandomWeight(),
-}));
-const N_STATES = STATES.length;
-
-const weights = STATES.map(state => state.weight); // TODO: Typed array?
-let { minWeight, maxWeight } = Array.from(weights).reduce(
-	(acc, weight) => {
-		if (weight < acc.minWeight) acc.minWeight = weight;
-		if (weight > acc.maxWeight) acc.maxWeight = weight;
-		return acc;
-	},
-	{ minWeight: Infinity, maxWeight: -Infinity }
-);
+// Derived.
+const MAX_N_RULES = Math.floor(MAX_WEIGHT * (Math.pow(MAX_NEIGHBOR_RANGE * 2 + 1, 2) - 1) + 1);
 
 // Common vertex shader.
 const vsSource = `
@@ -99,27 +62,212 @@ precision mediump float;
 precision mediump usampler2D;
 
 uniform usampler2D u_screenTexture;
+uniform vec3 u_colors[${MAX_N_STATES}];
 
 in vec2 v_texCoord;
 out vec4 FragColor;
 
 void main() {
 	uint cellState = texture(u_screenTexture, v_texCoord).r;
-
-	switch(cellState) {
-		${STATES.map(
-			(state, i) => `case ${i}u: FragColor = vec4(${hexToNormalizedRGB(state.color).join(', ')}, 1.0); break;`
-		).join('\n')}
-		default: FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-	}
+	FragColor = vec4(u_colors[cellState].rgb, 1.0);
 }
 `;
 
+tinykeys(window, {
+	// Change colors.
+	KeyC: () => updateColors(),
+	'Shift+KeyC': () => updateColors(-1),
+	// Increase / decrease resolution density.
+	KeyD: () => {
+		resolutionMultiplier = Math.min(2, resolutionMultiplier * 2);
+		showInfo(`Density: ${resolutionMultiplier * 100}%`);
+	},
+	'Shift+KeyD': () => {
+		resolutionMultiplier /= 2;
+		showInfo(`Density: ${resolutionMultiplier * 100}%`);
+	},
+	// Increase / decrease cell inertia.
+	KeyI: () => {
+		cellInertia = Math.min(1, cellInertia + 0.05);
+		updateUniforms();
+		showInfo(`Cell inertia: ${Math.round(cellInertia * 100)}%`);
+	},
+	'Shift+KeyI': () => {
+		cellInertia = Math.max(0, cellInertia - 0.05);
+		updateUniforms();
+		showInfo(`Cell inertia: ${Math.round(cellInertia * 100)}%`);
+	},
+	// Increase / decrease neighbor range.
+	KeyN: () => {
+		setNeighborRange(Math.min(MAX_NEIGHBOR_RANGE, neighborRange + 1));
+		showInfo(`Neighbor range: ${neighborRange}`);
+	},
+	'Shift+KeyN': () => {
+		setNeighborRange(Math.max(neighborRange - 1, 1));
+		showInfo(`Neighbor range: ${neighborRange}`);
+	},
+	// Change rules.
+	KeyR: () => {
+		updateUniforms();
+		showInfo('Rules changed');
+	},
+	// Scramble pixels.
+	KeyS: () => initBuffers(),
+	// Change neighborhood type.
+	// TODO: This isn’t well thought out; it should update minNeighborWeight, nRules, etc.
+	KeyV: () => {
+		isVonNeumann = !isVonNeumann;
+		showInfo(isVonNeumann ? 'Von Neumann neighborhood' : 'Moore neighborhood');
+	},
+	// Change weights.
+	KeyW: () => {
+		const label = updateWeights();
+		showInfo(`Weights: ${label}`);
+	},
+	'Shift+KeyW': () => {
+		const label = updateWeights(-1);
+		showInfo(`Weights: ${label}`);
+	},
+	// Pause / play.
+	Space: () => {
+		isPaused = !isPaused;
+		showInfo(isPaused ? 'Paused' : 'Playing');
+	},
+});
+
+let hideErrorTimeout;
+const errorContainer = document.getElementById('error');
+function showError() {
+	clearTimeout(hideErrorTimeout);
+	errorContainer.classList.add('show');
+	hideErrorTimeout = window.setTimeout(() => {
+		errorContainer.classList.remove('show');
+	}, 2000);
+}
+
+let hideInfoTimeout;
+const infoContainer = document.getElementById('info');
+function showInfo(text) {
+	clearTimeout(hideInfoTimeout);
+	infoContainer.textContent = text;
+	infoContainer.classList.add('show');
+	hideInfoTimeout = window.setTimeout(() => {
+		infoContainer.classList.remove('show');
+	}, 2000);
+}
+
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { antialias: false });
+gl.imageSmoothingEnabled = false;
+
+const weights = new Float32Array(MAX_N_STATES);
+const rules = new Uint8Array(MAX_N_RULES);
+let nStates = 8;
+let cellInertia = 0.8;
+let isVonNeumann = false;
+let neighborRange, minNeighborWeight;
+
+const displayShaderInfo = twgl.createProgramInfo(gl, [vsSource, displayFsSource]);
+const updateShaderInfos = stackedUpdates.map(args =>
+	twgl.createProgramInfo(gl, [vsSource, getUpdateFsSource(...args)])
+);
+
+const N_WEIGHT_DISTRIBUTIONS = 4;
+let nextWeightsIdx = Math.floor(Math.random() * N_WEIGHT_DISTRIBUTIONS);
+function updateWeights(direction = 1) {
+	let returnLabel = '';
+	nextWeightsIdx = (N_WEIGHT_DISTRIBUTIONS + nextWeightsIdx + direction) % N_WEIGHT_DISTRIBUTIONS;
+	switch (nextWeightsIdx) {
+		case 0:
+			for (let i = 0; i < MAX_N_STATES; ++i) {
+				weights[i] = (i % 2) * MAX_WEIGHT;
+			}
+			returnLabel = '0, 1, 0, 1…';
+			break;
+		case 1:
+			weights.set(generateFurthestSubsequentDistanceArray(MAX_N_STATES, [0, MAX_WEIGHT]));
+			returnLabel = '0, 1, ½, ¾…';
+			break;
+		case 2:
+			const pattern = [0, 0.5, 1, 0.5, 0].map(n => n * MAX_WEIGHT);
+			for (let i = 0; i < MAX_N_STATES; ++i) {
+				weights[i] = pattern[i % pattern.length];
+			}
+			returnLabel = '0, ½, 1, ½, 0…';
+			break;
+		case 3:
+			// Random…
+			for (let i = 0; i < MAX_N_STATES; ++i) {
+				weights[i] = Math.random() * MAX_WEIGHT;
+			}
+			returnLabel = 'random';
+			break;
+	}
+
+	updateUniforms();
+	return returnLabel;
+}
+updateWeights(0);
+
+let colors = new Float32Array(MAX_N_STATES * 3);
+let nextPaletteIdx = Math.floor(Math.random() * palettes.length);
+function updateColors(direction = 1) {
+	nextPaletteIdx = (palettes.length + nextPaletteIdx + direction) % palettes.length;
+	const normalizedPalette = palettes[nextPaletteIdx].map(hexToNormalizedRGB);
+	for (let i = 0; i < MAX_N_STATES; ++i) {
+		const rgbComponents = [...normalizedPalette[i % normalizedPalette.length]];
+		if (i >= normalizedPalette.length) {
+			// Add a small random offset to the RGB components for variety.
+			for (let j = 0; j < rgbComponents.length; ++j) {
+				rgbComponents[j] = Math.max(0, Math.min(1, rgbComponents[j] + Math.random() * 0.1 - 0.05));
+			}
+		}
+		const rIdx = i * 3;
+		colors[rIdx] = rgbComponents[0];
+		colors[rIdx + 1] = rgbComponents[1];
+		colors[rIdx + 2] = rgbComponents[2];
+	}
+}
+updateColors(0);
+
+function setNeighborRange(newNeighborRange) {
+	neighborRange = newNeighborRange;
+
+	updateUniforms();
+}
+setNeighborRange(2);
+
+function updateUniforms() {
+	const nNeighbors = Math.pow(neighborRange * 2 + 1, 2) - 1;
+
+	const { minWeight, maxWeight } = Array.from(weights.slice(0, nStates)).reduce(
+		(acc, weight) => {
+			if (weight < acc.minWeight) acc.minWeight = weight;
+			if (weight > acc.maxWeight) acc.maxWeight = weight;
+			return acc;
+		},
+		{ minWeight: Infinity, maxWeight: -Infinity }
+	);
+
+	minNeighborWeight = Math.floor(minWeight * nNeighbors);
+	const maxNeighborWeight = Math.floor(maxWeight * nNeighbors);
+	const nRules = maxNeighborWeight - minNeighborWeight + 1;
+
+	if (nRules > MAX_N_RULES) {
+		console.error('Too many rules:', nRules, weights);
+		showError();
+	}
+
+	const newRules = Array.from({ length: nRules }, (_, i) => {
+		if (i < nStates && cellInertia < 1) return i + 1;
+		return Math.random() < cellInertia ? 0 : Math.floor(Math.random() * (nStates + 1));
+	});
+	shuffleArray(newRules);
+	rules.set(newRules, 0);
+}
+
 // Update fragment shader.
-// TODO: Rather than regenerating this whenever a key is pressed, it would be better to
-//       keep it static and pass in the rules as a texture that can be sampled. Probably
-//       need to do the same for the weights.
-function getUpdateFsSource(nStates, nRules, gridSize = 1, canvasOffset = '0.0') {
+function getUpdateFsSource(gridSize = 1, canvasOffset = '0.0') {
 	return `
 	#version 300 es
 	precision mediump float;
@@ -127,17 +275,14 @@ function getUpdateFsSource(nStates, nRules, gridSize = 1, canvasOffset = '0.0') 
 
 	uniform usampler2D u_currentStateTexture;
 	uniform vec2 u_resolution;
-	uniform uint u_weights[${nStates}];
+	uniform float u_weights[${MAX_N_STATES}];
+	uniform uint u_rules[${MAX_N_RULES}];
 	uniform uint u_minNeighborWeight;
 	uniform int u_neighborRange;
+	uniform bool u_von_neumann;
 
 	in vec2 v_texCoord;
 	out uint State;
-
-	// TODO: Make configurable.
-	const uint rules[${nRules}] = uint[${nRules}](${Array.from({ length: nRules }, () =>
-		Math.random() < CELL_INERTIA ? 0 : Math.floor(Math.random() * (nStates + 1))
-	).join('u, ')}u);
 
 	// Function to compute the state of a cell
 	uint getState(vec2 coord) {
@@ -151,16 +296,16 @@ function getUpdateFsSource(nStates, nRules, gridSize = 1, canvasOffset = '0.0') 
 		uint state = getState(v_texCoord);
 
 		// Count alive neighbors
-		uint sum = 0u;
+		float sum = 0.0;
 		for (int dx = -u_neighborRange; dx <= u_neighborRange; dx++) {
 			for (int dy = -u_neighborRange; dy <= u_neighborRange; dy++) {
 				if (dx == 0 && dy == 0) continue;
+				if (u_von_neumann && (abs(dx) + abs(dy) > u_neighborRange)) continue; // Skip corners.
 				sum += u_weights[getState(v_texCoord + canvasOffset + vec2(dx, dy) * onePixel)];
 			}
 		}
-		sum -= u_minNeighborWeight; // Normalize to [0, maxNeighborWeight - minNeighborWeight].
-
-		uint newState = rules[sum];
+		uint ruleIndex = uint(sum) - u_minNeighborWeight; // Normalize to [0, maxNeighborWeight - minNeighborWeight].
+		uint newState = u_rules[ruleIndex];
 
 		if (newState == 0u) {
 			State = state;
@@ -170,27 +315,6 @@ function getUpdateFsSource(nStates, nRules, gridSize = 1, canvasOffset = '0.0') 
 	}
 	`;
 }
-
-const displayProgramInfo = twgl.createProgramInfo(gl, [vsSource, displayFsSource]);
-let updateProgramInfos = [];
-
-let neighborRange, nNeighbors, minNeighborWeight, maxNeighborWeight, nRules;
-function setNeighborRange(newNeighborRange) {
-	neighborRange = newNeighborRange;
-	nNeighbors = Math.pow(neighborRange * 2 + 1, 2) - 1;
-	minNeighborWeight = minWeight * nNeighbors;
-	maxNeighborWeight = maxWeight * nNeighbors;
-	nRules = maxNeighborWeight - minNeighborWeight + 1;
-
-	if (updateProgramInfos[0]) {
-		updateProgramInfos.forEach(updateProgramInfo => gl.deleteProgram(updateProgramInfo.program));
-	}
-
-	updateProgramInfos = [[1, 0.1]].map(args =>
-		twgl.createProgramInfo(gl, [vsSource, getUpdateFsSource(N_STATES, nRules, ...args)])
-	);
-}
-setNeighborRange(2);
 
 const arrays = {
 	position: {
@@ -209,15 +333,18 @@ const arrays = {
 };
 const bufferInfo = twgl.createBufferInfoFromArrays(gl, arrays);
 
-function createRandomTexture(gl, width, height) {
+function getRandomTextureData(width, height) {
 	const size = width * height;
 	const data = new Uint8Array(size);
 	for (let i = 0; i < size; ++i) {
 		// Generate a random state.
-		const state = Math.floor(Math.random() * N_STATES);
+		const state = Math.floor(Math.random() * nStates);
 		data[i] = state;
 	}
+	return data;
+}
 
+function createRandomTexture(gl, width, height) {
 	return twgl.createTexture(gl, {
 		width,
 		height,
@@ -226,7 +353,7 @@ function createRandomTexture(gl, width, height) {
 		internalFormat: gl.R8UI,
 		minMag: gl.NEAREST,
 		wrap: gl.CLAMP_TO_EDGE,
-		src: data,
+		src: getRandomTextureData(width, height),
 	});
 }
 
@@ -234,22 +361,25 @@ function createRandomTexture(gl, width, height) {
 let textures = [];
 let fbos = [];
 function initBuffers() {
+	textures.forEach(texture => gl.deleteTexture(texture));
 	textures = [
 		createRandomTexture(gl, canvas.width, canvas.height),
 		createRandomTexture(gl, canvas.width, canvas.height),
 	];
 
+	fbos.forEach(fbo => gl.deleteFramebuffer(fbo.framebuffer));
 	fbos = textures.map(texture => twgl.createFramebufferInfo(gl, [{ attachment: texture }]));
 }
 
+let resolutionMultiplier = 0.5;
 function resize() {
-	if (twgl.resizeCanvasToDisplaySize(gl.canvas)) {
+	if (twgl.resizeCanvasToDisplaySize(gl.canvas, resolutionMultiplier)) {
 		initBuffers(); // Reinitialize textures and FBOs on resize.
 		gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 	}
 }
 
-function runUpdateProgram(programInfo) {
+function runUpdateShader(programInfo) {
 	gl.bindFramebuffer(gl.FRAMEBUFFER, fbos[nextStateTextureIndex].framebuffer);
 	gl.useProgram(programInfo.program);
 	twgl.setBuffersAndAttributes(gl, programInfo, bufferInfo);
@@ -257,40 +387,43 @@ function runUpdateProgram(programInfo) {
 	// Pass data to the shader.
 	twgl.setUniforms(programInfo, {
 		u_weights: weights,
+		u_rules: rules,
 		u_minNeighborWeight: minNeighborWeight,
 		u_neighborRange: neighborRange,
 		u_currentStateTexture: textures[1 - nextStateTextureIndex], // Send the current state for feedback.
 		u_resolution: [gl.canvas.width, gl.canvas.height],
+		u_von_neumann: isVonNeumann,
 	});
 	twgl.drawBufferInfo(gl, bufferInfo, gl.TRIANGLE_STRIP);
 }
 
 let nextStateTextureIndex = 0;
-let nextAnimationFrame = null;
 let isPaused = false;
 function render(time) {
 	time /= 1000; // Convert time to seconds.
 	resize();
 
 	// 1. Update the game state: Render to off-screen texture.
-	updateProgramInfos.forEach(updateProgramInfo => {
-		runUpdateProgram(updateProgramInfo);
+	if (!isPaused) {
+		updateShaderInfos.forEach(updateShaderInfo => {
+			runUpdateShader(updateShaderInfo);
 
-		// Ping pong!
-		nextStateTextureIndex = 1 - nextStateTextureIndex;
-	});
+			// Ping pong!
+			nextStateTextureIndex = 1 - nextStateTextureIndex;
+		});
+	}
 
 	// 2. Display the updated state: Render to the screen.
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null); // Bind the default framebuffer (the screen).
-	gl.useProgram(displayProgramInfo.program);
-	twgl.setBuffersAndAttributes(gl, displayProgramInfo, bufferInfo);
+	gl.useProgram(displayShaderInfo.program);
+	twgl.setBuffersAndAttributes(gl, displayShaderInfo, bufferInfo);
 
 	// Pass data to the display shader.
-	twgl.setUniforms(displayProgramInfo, {
+	twgl.setUniforms(displayShaderInfo, {
 		u_screenTexture: textures[1 - nextStateTextureIndex], // Send the updated state.
+		u_colors: colors,
 	});
 	twgl.drawBufferInfo(gl, bufferInfo, gl.TRIANGLE_STRIP);
-
-	if (!isPaused) nextAnimationFrame = requestAnimationFrame(render);
+	requestAnimationFrame(render);
 }
-nextAnimationFrame = requestAnimationFrame(render);
+requestAnimationFrame(render);
