@@ -133,6 +133,17 @@ tinykeys(window, {
 		isPaused = !isPaused;
 		showInfo(isPaused ? 'Paused' : 'Playing');
 	},
+	'Shift+?': () => {
+		instructionsContainer.classList.toggle('show');
+	},
+	Escape: () => {
+		instructionsContainer.classList.remove('show');
+	},
+});
+
+const instructionsContainer = document.getElementById('instructions');
+instructionsContainer.querySelector('button').addEventListener('click', () => {
+	instructionsContainer.classList.remove('show');
 });
 
 let hideErrorTimeout;

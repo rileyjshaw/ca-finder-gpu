@@ -7,6 +7,48 @@
 	</head>
 	<body>
 		<canvas id="canvas"></canvas>
+		<div id="instructions" class="show">
+			<div>
+				<h1>CA Finder (GPU Edition)</h1>
+				<p>
+					This is a cellular automaton simulator running as a shader on your GPU. The controls require a
+					keyboard.
+				</p>
+				<p>
+					It’s a fairly capable simulation, but I haven’t taken the time to give it an approachable interface.
+					The idea was to make a tool that would let me make images of tiling patterns quickly.
+				</p>
+				<p>
+					But you can totally use it too! If you’re not familiar with the concept of a cellular automaton, it
+					might help to <a href="https://en.wikipedia.org/wiki/Cellular_automaton">brush up first</a>. Or just
+					start hitting buttons and see what happens.
+				</p>
+				<p>
+					If you take any cool screenshots, feel free to share them with me. I love seeing how people use
+					tools like this.
+				</p>
+				<h2>Controls</h2>
+				<ul>
+					<li><kbd>C</kbd>: Increment color palette (decrement with <kbd>Shift</kbd> + <kbd>C</kbd>)</li>
+					<li><kbd>D</kbd>: Increase pixel density (decrease with <kbd>Shift</kbd> + <kbd>D</kbd>)</li>
+					<li><kbd>I</kbd>: Increase cell inertia (decrease with <kbd>Shift</kbd> + <kbd>I</kbd>)</li>
+					<li><kbd>N</kbd>: Increase neighbor range (decrease with <kbd>Shift</kbd> + <kbd>N</kbd>)</li>
+					<li><kbd>R</kbd>: Change rules (completely randomized)</li>
+					<li><kbd>S</kbd>: Scramble pixels (useful if a simulation gets stuck in a single state)</li>
+					<li><kbd>V</kbd>: Change neighborhood type</li>
+					<li><kbd>W</kbd>: Change weight distribution</li>
+					<li><kbd>Space</kbd>: Pause / play simulation</li>
+					<li><kbd>?</kbd>: Show this info pane</li>
+					<li><kbd>Esc</kbd>: Hide this info pane</li>
+				</ul>
+				<p>
+					Note: not everything is configurable from this interface. To make deeper tweaks, follow
+					<a href="https://github.com/rileyjshaw/ca-finder-gpu">the README</a>
+					and start running the code locally.
+				</p>
+				<button>Get started</button>
+			</div>
+		</div>
 		<div id="error">!</div>
 		<div id="info"></div>
 		<script type="module" src="/main.js"></script>
