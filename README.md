@@ -12,8 +12,8 @@ To run this project locally, you'll need to have Git and Node.js installed. Then
 ```sh
 git clone git@github.com:rileyjshaw/ca-finder.git
 cd ca-finder
+npm install
 npm run dev
-npm start
 ```
 
 ## License
