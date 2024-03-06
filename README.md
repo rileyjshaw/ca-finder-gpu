@@ -10,8 +10,8 @@ keyboard. You can read more about the project and [try it out online](https://ri
 To run this project locally, you'll need to have Git and Node.js installed. Then, run the following commands:
 
 ```sh
-git clone git@github.com:rileyjshaw/ca-finder-gpu.git
-cd ca-finder-gpu
+git clone git@github.com:rileyjshaw/ca-finder.git
+cd ca-finder
 npm run dev
 npm start
 ```
