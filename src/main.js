@@ -23,11 +23,23 @@ we sum the neighbor weights (shown) and get 5. We look that up in the rule array
 
 and determine that it should remain unchanged. */
 
-import * as twgl from 'twgl-base.js';
+import {
+	createProgramInfo,
+	createBufferInfoFromArrays,
+	createFramebufferInfo,
+	createTexture,
+	drawBufferInfo,
+	resizeCanvasToDisplaySize,
+	setBuffersAndAttributes,
+	setUniforms,
+} from 'twgl-base.js';
 import { tinykeys } from 'tinykeys';
 
 import palettes from './palettes.js';
 import { generateFurthestSubsequentDistanceArray, hexToNormalizedRGB, shuffleArray } from './util.js';
+
+// Common vertex shader.
+import vsSource from './vertex.glsl';
 
 import './style.css';
 
@@ -42,18 +54,6 @@ const stackedUpdates = [[1], [1, 0.25]];
 
 // Derived.
 const MAX_N_RULES = Math.floor(MAX_WEIGHT * (Math.pow(MAX_NEIGHBOR_RANGE * 2 + 1, 2) - 1) + 1);
-
-// Common vertex shader.
-const vsSource = `
-#version 300 es
-in vec4 position;
-out vec2 v_texCoord;
-
-void main() {
-	gl_Position = position;
-	v_texCoord = position.xy * 0.5 + 0.5; // Map from [-1,1] to [0,1]
-}
-`;
 
 // Display fragment shader.
 const displayFsSource = `
@@ -178,10 +178,8 @@ let cellInertia = 0.8;
 let isVonNeumann = false;
 let neighborRange, minNeighborWeight;
 
-const displayShaderInfo = twgl.createProgramInfo(gl, [vsSource, displayFsSource]);
-const updateShaderInfos = stackedUpdates.map(args =>
-	twgl.createProgramInfo(gl, [vsSource, getUpdateFsSource(...args)])
-);
+const displayShaderInfo = createProgramInfo(gl, [vsSource, displayFsSource]);
+const updateShaderInfos = stackedUpdates.map(args => createProgramInfo(gl, [vsSource, getUpdateFsSource(...args)]));
 
 const N_WEIGHT_DISTRIBUTIONS = 4;
 let nextWeightsIdx = Math.floor(Math.random() * N_WEIGHT_DISTRIBUTIONS);
@@ -342,7 +340,7 @@ const arrays = {
 		],
 	},
 };
-const bufferInfo = twgl.createBufferInfoFromArrays(gl, arrays);
+const bufferInfo = createBufferInfoFromArrays(gl, arrays);
 
 function getRandomTextureData(width, height) {
 	const size = width * height;
@@ -356,7 +354,7 @@ function getRandomTextureData(width, height) {
 }
 
 function createRandomTexture(gl, width, height) {
-	return twgl.createTexture(gl, {
+	return createTexture(gl, {
 		width,
 		height,
 		type: gl.UNSIGNED_BYTE,
@@ -379,12 +377,12 @@ function initBuffers() {
 	];
 
 	fbos.forEach(fbo => gl.deleteFramebuffer(fbo.framebuffer));
-	fbos = textures.map(texture => twgl.createFramebufferInfo(gl, [{ attachment: texture }]));
+	fbos = textures.map(texture => createFramebufferInfo(gl, [{ attachment: texture }]));
 }
 
 let resolutionMultiplier = 0.5;
 function resize() {
-	if (twgl.resizeCanvasToDisplaySize(gl.canvas, resolutionMultiplier)) {
+	if (resizeCanvasToDisplaySize(gl.canvas, resolutionMultiplier)) {
 		initBuffers(); // Reinitialize textures and FBOs on resize.
 		gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
 	}
@@ -393,10 +391,10 @@ function resize() {
 function runUpdateShader(programInfo) {
 	gl.bindFramebuffer(gl.FRAMEBUFFER, fbos[nextStateTextureIndex].framebuffer);
 	gl.useProgram(programInfo.program);
-	twgl.setBuffersAndAttributes(gl, programInfo, bufferInfo);
+	setBuffersAndAttributes(gl, programInfo, bufferInfo);
 
 	// Pass data to the shader.
-	twgl.setUniforms(programInfo, {
+	setUniforms(programInfo, {
 		u_weights: weights,
 		u_rules: rules,
 		u_minNeighborWeight: minNeighborWeight,
@@ -405,7 +403,7 @@ function runUpdateShader(programInfo) {
 		u_resolution: [gl.canvas.width, gl.canvas.height],
 		u_von_neumann: isVonNeumann,
 	});
-	twgl.drawBufferInfo(gl, bufferInfo, gl.TRIANGLE_STRIP);
+	drawBufferInfo(gl, bufferInfo, gl.TRIANGLE_STRIP);
 }
 
 let nextStateTextureIndex = 0;
@@ -427,14 +425,14 @@ function render(time) {
 	// 2. Display the updated state: Render to the screen.
 	gl.bindFramebuffer(gl.FRAMEBUFFER, null); // Bind the default framebuffer (the screen).
 	gl.useProgram(displayShaderInfo.program);
-	twgl.setBuffersAndAttributes(gl, displayShaderInfo, bufferInfo);
+	setBuffersAndAttributes(gl, displayShaderInfo, bufferInfo);
 
 	// Pass data to the display shader.
-	twgl.setUniforms(displayShaderInfo, {
+	setUniforms(displayShaderInfo, {
 		u_screenTexture: textures[1 - nextStateTextureIndex], // Send the updated state.
 		u_colors: colors,
 	});
-	twgl.drawBufferInfo(gl, bufferInfo, gl.TRIANGLE_STRIP);
+	drawBufferInfo(gl, bufferInfo, gl.TRIANGLE_STRIP);
 	requestAnimationFrame(render);
 }
 requestAnimationFrame(render);
